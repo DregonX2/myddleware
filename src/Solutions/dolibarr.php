@@ -196,8 +196,8 @@ class dolibarr extends solution
             // Some solutions restrict read vs write by type; keep same list by default.
             return $modules;
         } catch (\Exception $e) {
-            $error = $e->getMessage().' '.$e->getFile().' Line : ( '.$e->getLine().' )';
-            $this->logger->error($error);
+            $error = $e->getMessage();
+            $this->logger->error($error, ['exception_file' => $e->getFile(), 'exception_line' => $e->getLine()]);
 
             return ['error' => $error];
         }
@@ -273,8 +273,8 @@ class dolibarr extends solution
 
             return $this->ensureFieldDefinitionDefaults($this->moduleFields);
         } catch (\Exception $e) {
-            $error = $e->getMessage().' '.$e->getFile().' Line : ( '.$e->getLine().' )';
-            $this->logger->error($error);
+            $error = $e->getMessage();
+            $this->logger->error($error, ['exception_file' => $e->getFile(), 'exception_line' => $e->getLine()]);
 
             return ['error' => $error];
         }
@@ -412,7 +412,7 @@ class dolibarr extends solution
 
             return $result;
         } catch (\Exception $e) {
-            $this->logger->error('Error : '.$e->getMessage().' '.$e->getFile().' Line : ( '.$e->getLine().' )');
+            $this->logger->error('Dolibarr read error', ['error' => $e->getMessage(), 'exception_file' => $e->getFile(), 'exception_line' => $e->getLine()]);
             throw $e;
         }
     }
