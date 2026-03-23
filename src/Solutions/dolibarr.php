@@ -27,6 +27,12 @@ namespace App\Solutions;
 use Symfony\Component\Form\Extension\Core\Type\CheckboxType;
 use Symfony\Component\Form\Extension\Core\Type\PasswordType;
 use Symfony\Component\Form\Extension\Core\Type\TextType;
+use Symfony\Component\HttpClient\HttpClient;
+use Symfony\Contracts\HttpClient\Exception\ClientExceptionInterface;
+use Symfony\Contracts\HttpClient\Exception\DecodingExceptionInterface;
+use Symfony\Contracts\HttpClient\Exception\RedirectionExceptionInterface;
+use Symfony\Contracts\HttpClient\Exception\ServerExceptionInterface;
+use Symfony\Contracts\HttpClient\Exception\TransportExceptionInterface;
 
 /**
  * Dolibarr connector (REST API).
@@ -521,91 +527,76 @@ class dolibarr extends solution
     }
 
     /**
-     * Low-level HTTP call helper (curl).
+     * Low-level HTTP call helper.
      *
      * - For GET with $args, parameters are appended to query string.
-     * - For POST/PUT, payload is JSON.
+     * - For POST/PUT/PATCH/DELETE, payload is JSON.
+     *
+     * @throws ClientExceptionInterface
+     * @throws DecodingExceptionInterface
+     * @throws RedirectionExceptionInterface
+     * @throws ServerExceptionInterface
+     * @throws TransportExceptionInterface
      */
     protected function callApi(string $url, string $method = 'GET', array $args = [], int $timeout = 60)
     {
-        if (!function_exists('curl_init') || !function_exists('curl_setopt')) {
-            throw new \Exception('curl extension is missing!');
-        }
-
-        $curlHandle = curl_init();
-
         $headers = [
-            'Accept: application/json',
-            'DOLAPIKEY: '.$this->apiKey,
+            'Accept' => 'application/json',
+            'DOLAPIKEY' => $this->apiKey,
         ];
         if (!empty($this->apiEntity)) {
-            $headers[] = 'DOLAPIENTITY: '.$this->apiEntity;
+            $headers['DOLAPIENTITY'] = $this->apiEntity;
         }
 
         $method = strtoupper($method);
+        $requestOptions = [
+            'headers' => $headers,
+            'timeout' => $timeout,
+            'verify_peer' => $this->verify_ssl,
+            'verify_host' => $this->verify_ssl,
+        ];
 
         if ('GET' === $method && !empty($args)) {
             $url = sprintf('%s?%s', $url, http_build_query($args));
         } elseif (in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
-            // Dolibarr can require JSON content-type even for some POST sub-actions.
-            $headers[] = 'Content-Type: application/json';
+            $headers['Content-Type'] = 'application/json';
+            $requestOptions['headers'] = $headers;
 
-            if (!empty($args) && 'GET' !== $method) {
-                $jsonData = json_encode($args);
-                curl_setopt($curlHandle, CURLOPT_POSTFIELDS, $jsonData);
+            if (!empty($args)) {
+                $requestOptions['body'] = json_encode($args);
             } elseif ('POST' === $method) {
-                // Some endpoints reject empty body for POST; use empty JSON object.
-                curl_setopt($curlHandle, CURLOPT_POSTFIELDS, '{}');
+                $requestOptions['body'] = '{}';
             }
         }
 
-        curl_setopt($curlHandle, CURLOPT_URL, $url);
-        curl_setopt($curlHandle, CURLOPT_HTTPHEADER, $headers);
-        curl_setopt($curlHandle, CURLOPT_TIMEOUT, $timeout);
-        curl_setopt($curlHandle, CURLOPT_CUSTOMREQUEST, $method);
-        curl_setopt($curlHandle, CURLOPT_RETURNTRANSFER, true);
+        $client = HttpClient::create();
+        $response = $client->request($method, $url, $requestOptions);
+        $httpCode = $response->getStatusCode();
+        $rawResponse = $response->getContent(false);
 
-        // SSL verification (default true)
-        curl_setopt($curlHandle, CURLOPT_SSL_VERIFYPEER, $this->verify_ssl);
-        curl_setopt($curlHandle, CURLOPT_SSL_VERIFYHOST, $this->verify_ssl ? 2 : 0);
-
-        $raw = curl_exec($curlHandle);
-
-        if (false === $raw) {
-            $err = curl_error($curlHandle);
-            curl_close($curlHandle);
-            throw new \Exception('cURL error: '.$err);
+        $trimmedResponse = trim($rawResponse);
+        if ('' !== $trimmedResponse && ctype_digit($trimmedResponse)) {
+            return (int) $trimmedResponse;
         }
 
-        $httpCode = (int) curl_getinfo($curlHandle, CURLINFO_HTTP_CODE);
-        curl_close($curlHandle);
+        $decoded = json_decode($rawResponse, true);
 
-        // Some Dolibarr endpoints return plain integer (id) for create
-        $trim = trim($raw);
-        if ('' !== $trim && ctype_digit($trim)) {
-            return (int) $trim;
-        }
-
-        $decoded = json_decode($raw, true);
-
-        // If JSON decode fails, return structured error
         if (null === $decoded && JSON_ERROR_NONE !== json_last_error()) {
             return [
                 'error' => [
                     'code' => $httpCode,
                     'message' => 'Invalid JSON response: '.json_last_error_msg(),
-                    'raw' => $raw,
+                    'raw' => $rawResponse,
                 ],
             ];
         }
 
-        // Normalize HTTP errors
         if ($httpCode >= 400 && (empty($decoded) || !isset($decoded['error']))) {
             return [
                 'error' => [
                     'code' => $httpCode,
                     'message' => 'HTTP error '.$httpCode,
-                    'raw' => $decoded ?: $raw,
+                    'raw' => $decoded ?: $rawResponse,
                 ],
             ];
         }
